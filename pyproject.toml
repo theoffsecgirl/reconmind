@@ -1,0 +1,14 @@
+[project]
+name = "reconmind"
+version = "0.1.0"
+description = "Indice pasivo de cobertura de recon para bug bounty: que endpoint ya se probo, con que herramienta, para que clase de vulnerabilidad."
+authors = [{ name = "theoffsecgirl" }]
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
