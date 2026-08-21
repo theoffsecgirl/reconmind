@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """reconmind — actualiza notes/coverage.md a partir del JSON que ya generan tus herramientas.
 
+Contrato publico: cualquier herramienta (propia o de terceros) puede emitir el esquema
+generico de reconmind (ver `parse_generico` y el README) y su output se lee sin que
+reconmind la conozca de antemano. Ademas hay unos pocos "adaptadores conocidos" para
+herramientas propias (webxray, takeovflow, findings-hub) que no usan ese esquema — son un
+añadido, no el unico camino.
+
 Se invoca en silencio desde `hunt-start` al final de cada arranque de sesion. Nunca debe
 bloquear esa sesion: cualquier fichero inesperado o ausente se avisa por stderr y se ignora.
 
@@ -49,9 +55,12 @@ ICONOS = {"limpio": "🟢", "sospechoso": "🟡", "confirmado": "🔴", "no_prob
 class Signal:
     """Una señal normalizada extraida del JSON de una herramienta.
 
-    `estado` es siempre "limpio" o "sospechoso": reconmind nunca marca "confirmado" por su
-    cuenta (ninguna de estas herramientas valida impacto, solo dan heuristicas/candidatos) —
-    ver README, seccion "Por que no hay auto-confirmado".
+    `estado` es "limpio", "sospechoso" o "confirmado". Los adaptadores conocidos
+    (webxray/takeovflow/findings-hub) nunca producen "confirmado" por su cuenta — son
+    heuristicas, no validan impacto (ver README, seccion "Por que no hay auto-confirmado").
+    Via el esquema generico, en cambio, "confirmado" SI puede aparecer: ahi es la
+    herramienta de terceros la que lo declara explicitamente, bajo su propia responsabilidad
+    — reconmind solo renderiza lo que el contrato dice.
     """
 
     endpoint: str
@@ -87,19 +96,63 @@ def _cargar(path: Path) -> object | None:
 # Ningun parser lanza excepcion por datos faltantes: usa .get() con defaults en todo.
 
 
-def parse_pathraider(data: dict, fuente: str) -> list[Signal]:
-    """pathraider --json-output: {"tool": "pathraider", "targets": {url: [hallazgos]}}."""
+# Esquema publico de reconmind — el contrato principal, para CUALQUIER herramienta:
+#
+#   {
+#     "tool": "nombre-de-la-herramienta",
+#     "findings": [
+#       {"url": "https://ejemplo.com/endpoint", "class": "xss", "status": "suspicious", "detail": "texto libre opcional"}
+#     ]
+#   }
+#
+# "class" y "status" son de vocabulario cerrado (ver mapas abajo); un valor que no
+# reconocemos cae a "Otro" / "sospechoso" en vez de romper el parseo.
+
+CLASE_A_COLUMNA = {
+    "auth": "Auth",
+    "access-control": "Access Control",
+    "idor": "IDOR",
+    "api": "API Security",
+    "business-logic": "Business Logic",
+    "xss": "Client-Side/XSS",
+    "misconfig": "Misconfig",
+    "ssrf": "SSRF",
+    "other": "Otro",
+}
+
+ESTADO_GENERICO_A_INTERNO = {
+    "clean": "limpio",
+    "suspicious": "sospechoso",
+    "confirmed": "confirmado",
+}
+
+
+def parse_generico(data: dict, fuente: str) -> list[Signal]:
+    """Esquema publico de reconmind: {"tool": str, "findings": [{"url","class","status","detail"}]}.
+
+    Este es el camino principal: cualquier herramienta, propia o de terceros, puede emitir
+    este formato sin que reconmind la conozca de antemano. A diferencia de los adaptadores
+    conocidos de abajo, aqui SI se respeta "confirmed" tal cual lo declare la herramienta —
+    es su afirmacion, bajo su responsabilidad, no una inferencia de reconmind.
+    """
     señales = []
-    for target_url, hallazgos in data.get("targets", {}).items():
-        if not hallazgos:
-            señales.append(
-                Signal(target_url, "Otro", "limpio", "pathraider: sin hallazgos (LFI/traversal)", fuente)
-            )
+    nombre_herramienta = data.get("tool") or "desconocida"
+    for h in data.get("findings", []):
+        if not isinstance(h, dict):
             continue
-        rutas = ", ".join(sorted({h.get("path", "?") for h in hallazgos})[:2])
-        señales.append(
-            Signal(target_url, "Otro", "sospechoso", f"pathraider: posible traversal ({rutas})", fuente)
-        )
+        url = h.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        columna = CLASE_A_COLUMNA.get(h.get("class"), "Otro")
+        estado = ESTADO_GENERICO_A_INTERNO.get(h.get("status"), "sospechoso")
+        detalle = h.get("detail")
+        nota = f"{nombre_herramienta}: {detalle}" if detalle else f"{nombre_herramienta}: {h.get('class', 'other')}"
+        if estado == "confirmado":
+            # El esquema generico permite que un tercero declare "confirmed", pero reconmind
+            # no lo valida el mismo — lo deja explicito en la propia celda para que no se lea
+            # como una verificacion propia de reconmind.
+            nota += f" — confirmado declarado por {nombre_herramienta}, no validado por reconmind"
+        señales.append(Signal(url, columna, estado, nota, fuente))
     return señales
 
 
@@ -209,9 +262,13 @@ def parse_findings_hub(data: dict, fuente: str) -> list[Signal]:
 
 
 def _sniff(data: object) -> str | None:
-    """Identifica que herramienta produjo este JSON por su forma, no por el nombre del fichero."""
-    if isinstance(data, dict) and data.get("tool") == "pathraider" and "targets" in data:
-        return "pathraider"
+    """Identifica que forma tiene este JSON, no por el nombre del fichero.
+
+    Orden: primero el esquema generico (el contrato publico, para cualquier herramienta),
+    despues los adaptadores conocidos de herramientas propias que no lo usan.
+    """
+    if isinstance(data, dict) and isinstance(data.get("tool"), str) and isinstance(data.get("findings"), list):
+        return "generico"
     if isinstance(data, dict) and data.get("tool") == "takeovflow" and "domains" in data:
         return "takeovflow"
     if isinstance(data, dict) and "hallazgos" in data and "modo" in data:
@@ -222,7 +279,7 @@ def _sniff(data: object) -> str | None:
 
 
 PARSERS = {
-    "pathraider": parse_pathraider,
+    "generico": parse_generico,
     "webxray": parse_webxray,
     "takeovflow": parse_takeovflow,
     "findings-hub": parse_findings_hub,
@@ -278,6 +335,9 @@ def construir_matriz(señales: list[Signal]) -> dict[str, dict[str, list[Signal]
 def _celda(señales_celda: list[Signal] | None) -> str:
     if not señales_celda:
         return ICONOS["no_probado"]
+    confirmadas = [s.nota for s in señales_celda if s.estado == "confirmado"]
+    if confirmadas:
+        return f"{ICONOS['confirmado']} " + "; ".join(confirmadas)
     sospechosas = [s.nota for s in señales_celda if s.estado == "sospechoso"]
     if sospechosas:
         return f"{ICONOS['sospechoso']} " + "; ".join(sospechosas)
@@ -312,7 +372,8 @@ def render_markdown(
     lineas.append("")
     lineas.append(
         "Leyenda: ⬜ no probado · 🟢 probado-limpio · 🟡 probado-sospechoso · "
-        "🔴 confirmado (reservado — este script nunca lo marca, ver README)"
+        "🔴 confirmado (solo si una herramienta lo declara explicitamente via el esquema "
+        "generico — ningun adaptador conocido lo marca por su cuenta, ver README)"
     )
     lineas.append("")
 
@@ -328,6 +389,7 @@ def render_markdown(
     tocados = len(matriz)
     total_sospechoso = sum(1 for s in señales if s.estado == "sospechoso")
     total_limpio = sum(1 for s in señales if s.estado == "limpio")
+    total_confirmado = sum(1 for s in señales if s.estado == "confirmado")
     lineas.append("")
     lineas.append("## Resumen")
     if superficie_conocida:
@@ -341,7 +403,7 @@ def render_markdown(
             f"- {tocados} endpoints con alguna señal de herramienta "
             "(no se encontro http/live.txt ni http/urls_clean.txt para contar la superficie total)"
         )
-    lineas.append(f"- 🟡 sospechoso: {total_sospechoso} · 🟢 limpio: {total_limpio} · 🔴 confirmado: 0")
+    lineas.append(f"- 🟡 sospechoso: {total_sospechoso} · 🟢 limpio: {total_limpio} · 🔴 confirmado: {total_confirmado}")
 
     return "\n".join(lineas) + "\n"
 

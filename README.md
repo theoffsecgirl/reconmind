@@ -5,7 +5,7 @@
 **Passive recon coverage index for bug bounty — what you already tested, and where**
 
 ![Language](https://img.shields.io/badge/Python-3.12+-9E4AFF?style=flat-square&logo=python&logoColor=white)
-![Version](https://img.shields.io/badge/version-0.1.0-9E4AFF?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.2.0-9E4AFF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-9E4AFF?style=flat-square)
 ![Category](https://img.shields.io/badge/Category-Bug%20Bounty%20%7C%20Pentesting-111111?style=flat-square)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen?style=flat-square)
@@ -29,20 +29,26 @@
 
 ## What does it do?
 
-On a large target you end up with a pile of recon output from your own tools —
-[pathraider](https://github.com/theoffsecgirl/pathraider) *(now folded into this repo, see
-below)*, [webxray](https://github.com/theoffsecgirl/webxray),
-[takeovflow](https://github.com/theoffsecgirl/takeovflow),
-[findings-hub](https://github.com/theoffsecgirl/findings-hub) — plus whatever a
-deterministic recon pipeline produced, and it's easy to lose track of which endpoint or
-parameter was already tested for which vulnerability class. There's no equivalent of
-"code coverage" for bug bounty. `reconmind` reads the JSON those tools already emit with
-`--json-output` and writes a Markdown matrix, `notes/coverage.md`, straight into the
-target's own folder.
+On a large target you end up with a pile of recon output from a bunch of different
+tools, and it's easy to lose track of which endpoint or parameter was already tested for
+which vulnerability class. There's no equivalent of "code coverage" for bug bounty.
+`reconmind` reads JSON that tools already emit and writes a Markdown matrix,
+`notes/coverage.md`, straight into the target's own folder.
 
 `reconmind` **does not scan, does not send a single request, does not decide anything for
 you.** It only reads JSON that already exists on disk and summarizes it. It's a view, not
 a tool you run.
+
+It reads two kinds of input:
+
+1. **The generic schema** (see below) — a small public JSON contract any tool, yours or
+   someone else's, can emit. This is the main way to plug something into `reconmind`, and
+   `reconmind` doesn't need to know the tool in advance to understand it.
+2. **A few built-in adapters** for tools of mine that don't speak that schema —
+   [webxray](https://github.com/theoffsecgirl/webxray),
+   [takeovflow](https://github.com/theoffsecgirl/takeovflow),
+   [findings-hub](https://github.com/theoffsecgirl/findings-hub). These are an addition,
+   not a requirement — if you don't use any of them, the generic schema is all you need.
 
 > Note: `notes/coverage.md` itself is generated in Spanish — it's a personal tool wired
 > into a Spanish-language hunting workflow. The code, this README and the tests are in
@@ -53,9 +59,9 @@ a tool you run.
 ## Zero friction: not a command you have to remember
 
 `reconmind` is not used by hand. It hooks into the end of an existing `hunt-start`
-shell function and runs silently every time a session starts — the same way
-`program-init` or `scope-program` already do. It never blocks the session: if anything
-fails, it warns on stderr and moves on.
+shell function and runs silently every time a session starts — the same way other
+recon steps already do. It never blocks the session: if anything fails, it warns on
+stderr and moves on.
 
 ### Installation
 
@@ -89,6 +95,54 @@ Nothing else to wire up — `$tdir` already exists as the target's directory in 
 
 ---
 
+## The generic schema — how to plug in any tool
+
+This is the contract. Any tool, script, or one-off `jq` pipeline can produce a JSON file
+that looks like this, drop it anywhere inside the target folder, and `reconmind` will
+pick it up without needing to know the tool by name:
+
+```json
+{
+  "tool": "your-tool-name",
+  "findings": [
+    {
+      "url": "https://example.com/endpoint",
+      "class": "xss",
+      "status": "suspicious",
+      "detail": "optional free-text note"
+    }
+  ]
+}
+```
+
+- **`tool`** — free text, shown in the note for each finding and in the source count at
+  the top of `coverage.md`.
+- **`class`** — one of: `auth`, `access-control`, `idor`, `api`, `business-logic`, `xss`,
+  `misconfig`, `ssrf`, `other`. These map 1:1 to the 8 priority vulnerability classes plus
+  a catch-all "Otro" column. An unrecognized value falls back to `other` instead of
+  breaking the parse.
+- **`status`** — one of: `clean`, `suspicious`, `confirmed`. An unrecognized value falls
+  back to `suspicious`.
+- **`detail`** — optional free text shown in the cell.
+
+Any field reconmind doesn't recognize is ignored; a finding missing a `url` is skipped.
+A malformed JSON file never crashes the run — it's reported on stderr and skipped.
+
+**On `"confirmed"`:** unlike the built-in adapters below (which never assert confirmed —
+see "On the confirmed state" further down), the generic schema *does* pass through
+`"confirmed"` as given. That's a deliberate difference: here a tool is making an explicit
+claim under its own responsibility, not reconmind inferring one from a heuristic. If your
+tool only reports unverified candidates, use `"suspicious"` — don't claim `"confirmed"`
+unless you've actually validated it.
+
+To keep that distinction visible where it matters, `reconmind` appends a disclaimer to
+any 🔴 confirmed cell that came from the generic schema: `— confirmado declarado por
+<tool>, no validado por reconmind` ("confirmed as declared by `<tool>`, not validated by
+reconmind"). You'll never see that disclaimer on a confirmed cell from one of the
+built-in adapters, because they never produce one in the first place — see below.
+
+---
+
 ## Output format: `notes/coverage.md`
 
 Open it like any other notes file — it's not something you "run". It only lists
@@ -97,42 +151,46 @@ table with a row for every untouched endpoint would be unreadable); everything e
 summarized in one line, the way a real code-coverage report doesn't print every untested
 line either.
 
-Example (synthetic domains):
+Example (synthetic domains, mixing the generic schema and a built-in adapter):
 
 ```markdown
 # Coverage — testtarget
-> Generado por reconmind el 2026-08-20 20:56 UTC. No editar a mano — se sobreescribe en cada `hunt-start`.
+> Generado por reconmind el 2026-08-21 09:00 UTC. No editar a mano — se sobreescribe en cada `hunt-start`.
 
-JSON de herramientas encontrados: takeovflow(1) · webxray(1)
+JSON de herramientas encontrados: generico(1) · webxray(1)
 
-Leyenda: ⬜ no probado · 🟢 probado-limpio · 🟡 probado-sospechoso · 🔴 confirmado (reservado — este script nunca lo marca, ver abajo)
+Leyenda: ⬜ no probado · 🟢 probado-limpio · 🟡 probado-sospechoso · 🔴 confirmado (solo si una herramienta lo declara explicitamente via el esquema generico — ningun adaptador conocido lo marca por su cuenta, ver README)
 
 | Endpoint | Auth | Access Control | IDOR | API Security | Business Logic | Client-Side/XSS | Misconfig | SSRF | Otro |
 |---|---|---|---|---|---|---|---|---|---|
 | https://example.com/search | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | 🟡 webxray: xss en param `q` | ⬜ | ⬜ | ⬜ |
-| https://staging.example.com/ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | 🟡 webxray: cabecera ausente `Content-Security-Policy` | ⬜ | ⬜ |
-| old-shop.example.com | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | 🟡 takeovflow: posible takeover (subjack, severidad HIGH) | ⬜ | ⬜ |
-| www.example.com | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | 🟢 takeovflow: resuelto, sin huella de takeover | ⬜ | ⬜ |
+| https://internal.example.com/admin | ⬜ | 🔴 mi-escaner-random: acceso sin auth validado a mano — confirmado declarado por mi-escaner-random, no validado por reconmind | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 
 ## Resumen
-- 3 endpoints conocidos (http/*.txt) · 4 con alguna señal de herramienta · 0 sin tocar (⬜)
-- 🟡 sospechoso: 3 · 🟢 limpio: 1 · 🔴 confirmado: 0
+- 2 endpoints conocidos (http/*.txt) · 2 con alguna señal de herramienta · 0 sin tocar (⬜)
+- 🟡 sospechoso: 1 · 🟢 limpio: 0 · 🔴 confirmado: 1
 ```
 
-Columns are your 8 priority vulnerability classes (Auth, Access Control, IDOR, API
+Columns are the 8 priority vulnerability classes (Auth, Access Control, IDOR, API
 Security, Business Logic, Client-Side/XSS, Misconfig, SSRF) plus a ninth, "Otro"
-("Other"), for things the tools do test but that don't belong in those 8 (e.g. SQLi,
-LFI/path traversal).
+("Other"), for anything that doesn't belong in those 8.
 
-### Why there's no auto-confirmed state
+### On the confirmed state
 
-`reconmind` never writes a 🔴 confirmed cell on its own. None of these tools validate
-impact — they're heuristics (`webxray`: reflected payload, unverified; `pathraider`:
-candidate traversal pattern; `takeovflow`: it literally calls its own finding
-`potential_takeovers`). Auto-marking something confirmed would break the basic bug-bounty
-discipline of never calling something a vulnerability without validated impact. The state
-stays reserved in the legend for a future phase that correlates with what you confirm by
-hand in your target notes — not implemented in this MVP.
+The three built-in adapters (`webxray`, `takeovflow`, `findings-hub`) never write a 🔴
+confirmed cell on their own. None of them validate impact — they're heuristics
+(`webxray`: reflected payload, unverified; `takeovflow`: it literally calls its own
+finding `potential_takeovers`; `findings-hub`: pattern match, not exploitation).
+Auto-marking something confirmed from a heuristic would break the basic bug-bounty
+discipline of never calling something a vulnerability without validated impact.
+
+The generic schema is different: there, `"confirmed"` is something the tool itself
+asserts, and `reconmind` just renders what the contract says — see above. But it doesn't
+render it identically to how a hypothetical future confirmed-by-reconmind state would
+look: every 🔴 cell coming from the generic schema carries the `— confirmado declarado
+por <tool>, no validado por reconmind` disclaimer inline, so it reads visually different
+from a plain 🔴, and nobody mistakes a third party's claim for something reconmind itself
+checked.
 
 ### Privacy
 
@@ -142,23 +200,22 @@ only looks at the rest.
 
 ---
 
-## What JSON it can read
+## Built-in adapters
 
-`reconmind` doesn't trust filenames — it identifies the tool by the *shape* of the JSON
-(the keys each one already emits with `--json-output`), so you can save those files
-wherever you like inside the target folder (e.g. `notes/` or `meta/`).
+These ship with `reconmind` for tools of mine that predate the generic schema and don't
+speak it. They're additional, not the primary path — if none of these are your tools,
+just emit the generic schema from whatever you use instead.
 
 | Tool | How to produce the JSON | Shape it recognizes | What it contributes |
 |---|---|---|---|
-| [`pathraider`](https://github.com/theoffsecgirl/pathraider) | `pathraider ... --json-output notes/pathraider.json` | `{"tool": "pathraider", "targets": {url: [findings]}}` | "Otro" column — 🟢 if that URL's findings list is empty, 🟡 otherwise |
 | [`webxray`](https://github.com/theoffsecgirl/webxray) | `webxray ... --json-output notes/webxray.json` | flat list of dicts with `type` + `url` | XSS → Client-Side/XSS · SQLi → Otro · missing header → Misconfig. **Never produces 🟢**: its JSON only records findings, not "scanned, nothing to report" |
 | [`takeovflow`](https://github.com/theoffsecgirl/takeovflow) | `takeovflow ... --json-output notes/takeovflow.json` | `{"tool": "takeovflow", "domains": {...}}` | Misconfig column — 🟡 for each entry in `potential_takeovers`, 🟢 for the rest of the resolved subdomains |
 | [`findings-hub`](https://github.com/theoffsecgirl/findings-hub) | `findings-hub analyze ... --json > notes/findings-hub.json` (note: it does **not** write a file on its own, you need to redirect stdout yourself) | `{"modo": "analyze", "hallazgos": [...]}` | Column inferred from each finding's `tags`/`description` (falls back to "Otro"); endpoint extracted from any URL inside `line`, or `source_file (line N)` otherwise |
 
-Any other `.json` sitting in the target folder (npm packages, configs, Caido exports...)
-is silently ignored — that's not an error, it just doesn't match a known shape. If an
-expected `.json` is corrupt or unreadable, `reconmind` warns on stderr and keeps going
-without breaking `hunt-start`.
+Any other `.json` sitting in the target folder that matches neither the generic schema
+nor one of these three shapes is silently ignored — that's not an error, it just doesn't
+match anything reconmind understands. If an expected `.json` is corrupt or unreadable,
+`reconmind` warns on stderr and keeps going without breaking `hunt-start`.
 
 The deterministic recon pipeline (subdomain/URL/param discovery scripts) doesn't produce
 JSON with a per-endpoint verdict — only plain-text lists (`http/live.txt`,

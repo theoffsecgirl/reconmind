@@ -6,9 +6,16 @@ import reconmind as rm
 # ─── Sniffing ────────────────────────────────────────────────────────────────
 
 
-def test_sniff_pathraider():
-    data = {"tool": "pathraider", "version": "1.1.0", "targets": {"https://example.com/x": []}}
-    assert rm._sniff(data) == "pathraider"
+def test_sniff_generico():
+    data = {"tool": "cualquier-cosa", "findings": [{"url": "https://example.com/x", "class": "ssrf"}]}
+    assert rm._sniff(data) == "generico"
+
+
+def test_sniff_generico_gana_sobre_adaptadores_conocidos_si_ambos_encajaran():
+    # findings-hub exige "hallazgos"+"modo"; si un JSON tuviera "tool"+"findings" ademas de
+    # eso, el esquema generico gana por ir primero en _sniff.
+    data = {"tool": "x", "findings": [], "hallazgos": [], "modo": "analyze"}
+    assert rm._sniff(data) == "generico"
 
 
 def test_sniff_takeovflow():
@@ -38,21 +45,45 @@ def test_sniff_json_desconocido():
 # ─── Parsers ─────────────────────────────────────────────────────────────────
 
 
-def test_parse_pathraider_limpio_y_sospechoso():
+def test_parse_generico_mapea_clase_y_estado():
     data = {
-        "tool": "pathraider",
-        "targets": {
-            "https://example.com/file?path=FUZZ": [
-                {"url": "https://example.com/file?path=..%2f..%2fetc%2fpasswd", "status": 200, "path": "..%2f..%2fetc%2fpasswd", "snippet": "root:x:0:0"}
-            ],
-            "https://example.com/safe?path=FUZZ": [],
-        },
+        "tool": "mi-escaner-random",
+        "findings": [
+            {"url": "https://example.com/admin", "class": "access-control", "status": "suspicious", "detail": "endpoint sin auth"},
+            {"url": "https://example.com/safe", "class": "misconfig", "status": "clean"},
+            {"url": "https://example.com/confirmed", "class": "ssrf", "status": "confirmed", "detail": "SSRF validado a mano"},
+        ],
     }
-    señales = rm.parse_pathraider(data, "notes/pathraider.json")
+    señales = rm.parse_generico(data, "notes/tercero.json")
     por_endpoint = {s.endpoint: s for s in señales}
-    assert por_endpoint["https://example.com/file?path=FUZZ"].estado == "sospechoso"
-    assert por_endpoint["https://example.com/file?path=FUZZ"].columna == "Otro"
-    assert por_endpoint["https://example.com/safe?path=FUZZ"].estado == "limpio"
+    assert por_endpoint["https://example.com/admin"].columna == "Access Control"
+    assert por_endpoint["https://example.com/admin"].estado == "sospechoso"
+    assert por_endpoint["https://example.com/safe"].estado == "limpio"
+    # A diferencia de los adaptadores conocidos, el esquema generico SI respeta "confirmed".
+    assert por_endpoint["https://example.com/confirmed"].estado == "confirmado"
+    assert "mi-escaner-random" in por_endpoint["https://example.com/confirmed"].nota
+    # ...pero la celda deja explicito que es una afirmacion de terceros, no una validacion propia.
+    assert "no validado por reconmind" in por_endpoint["https://example.com/confirmed"].nota
+    # Los estados "sospechoso"/"limpio" del esquema generico NO llevan ese disclaimer.
+    assert "no validado por reconmind" not in por_endpoint["https://example.com/admin"].nota
+    assert "no validado por reconmind" not in por_endpoint["https://example.com/safe"].nota
+
+
+def test_parse_generico_clase_desconocida_cae_en_otro():
+    data = {"tool": "x", "findings": [{"url": "https://example.com/y", "class": "algo-que-no-existe", "status": "suspicious"}]}
+    señales = rm.parse_generico(data, "f")
+    assert señales[0].columna == "Otro"
+
+
+def test_parse_generico_status_desconocido_cae_en_sospechoso():
+    data = {"tool": "x", "findings": [{"url": "https://example.com/y", "class": "xss", "status": "algo-raro"}]}
+    señales = rm.parse_generico(data, "f")
+    assert señales[0].estado == "sospechoso"
+
+
+def test_parse_generico_ignora_findings_sin_url():
+    data = {"tool": "x", "findings": [{"class": "xss", "status": "clean"}, {"url": "", "class": "xss"}, "no-es-un-dict"]}
+    assert rm.parse_generico(data, "f") == []
 
 
 def test_parse_webxray_tipos():
@@ -153,20 +184,58 @@ def test_celda_sospechoso_gana_sobre_limpio():
     assert "sospechoso-nota" in resultado
 
 
+def test_celda_confirmado_gana_sobre_todo():
+    celda = [
+        rm.Signal("e", "Otro", "limpio", "limpio-nota", "f"),
+        rm.Signal("e", "Otro", "sospechoso", "sospechoso-nota", "f"),
+        rm.Signal("e", "Otro", "confirmado", "confirmado-nota", "f"),
+    ]
+    resultado = rm._celda(celda)
+    assert resultado.startswith(rm.ICONOS["confirmado"])
+    assert "confirmado-nota" in resultado
+
+
 def test_celda_vacia_es_no_probado():
     assert rm._celda(None) == rm.ICONOS["no_probado"]
     assert rm._celda([]) == rm.ICONOS["no_probado"]
 
 
-def test_render_markdown_nunca_marca_confirmado_en_el_cuerpo(tmp_path):
+def test_render_markdown_sin_señal_confirmada_no_la_inventa(tmp_path):
     señales = [
-        rm.Signal("https://example.com/x", "Otro", "sospechoso", "algo raro", "notes/pathraider.json"),
+        rm.Signal("https://example.com/x", "Otro", "sospechoso", "algo raro", "notes/webxray.json"),
     ]
-    salida = rm.render_markdown("testtarget", tmp_path, señales, {"pathraider": 1}, 0)
+    salida = rm.render_markdown("testtarget", tmp_path, señales, {"webxray": 1}, 0)
     cuerpo = salida.split("## Resumen")[0]
-    # El emoji de confirmado solo debe aparecer en la linea de leyenda, nunca en una fila de datos.
+    # El emoji de confirmado solo debe aparecer en la linea de leyenda, nunca en una fila de datos,
+    # si ninguna señal recibida es "confirmado".
     assert cuerpo.count(rm.ICONOS["confirmado"]) == 1  # la mencion en la leyenda
     assert "| " + rm.ICONOS["confirmado"] not in cuerpo
+
+
+def test_render_markdown_respeta_confirmado_declarado_por_esquema_generico(tmp_path):
+    señales = [
+        rm.Signal("https://example.com/x", "SSRF", "confirmado", "ssrf validado a mano", "notes/tercero.json"),
+    ]
+    salida = rm.render_markdown("testtarget", tmp_path, señales, {"generico": 1}, 0)
+    cuerpo = salida.split("## Resumen")[0]
+    assert "| " + rm.ICONOS["confirmado"] in cuerpo
+    assert "🔴 confirmado: 1" in salida
+
+
+def test_end_to_end_confirmado_del_esquema_generico_lleva_disclaimer_en_la_celda(tmp_path):
+    # pipeline completo: parse_generico -> construir_matriz -> render_markdown
+    data = {
+        "tool": "mi-escaner-random",
+        "findings": [
+            {"url": "https://example.com/admin", "class": "access-control", "status": "confirmed", "detail": "acceso sin auth validado a mano"},
+        ],
+    }
+    señales = rm.parse_generico(data, "notes/tercero.json")
+    salida = rm.render_markdown("testtarget", tmp_path, señales, {"generico": 1}, 0)
+    cuerpo = salida.split("## Resumen")[0]
+    fila = next(linea for linea in cuerpo.splitlines() if linea.startswith("| https://example.com/admin"))
+    assert rm.ICONOS["confirmado"] in fila
+    assert "confirmado declarado por mi-escaner-random, no validado por reconmind" in fila
 
 
 def test_render_markdown_sin_señales_no_rompe(tmp_path):
