@@ -1,58 +1,103 @@
+<div align="center">
+
 # reconmind
 
-Índice pasivo de cobertura de recon para bug bounty. Un "code coverage" para hunting: qué
-endpoint ya probaste, con qué herramienta, para qué clase de vulnerabilidad, y con qué
-resultado — para no perder el hilo en targets grandes.
+**Passive recon coverage index for bug bounty — what you already tested, and where**
 
-## Qué problema resuelve
+![Language](https://img.shields.io/badge/Python-3.12+-9E4AFF?style=flat-square&logo=python&logoColor=white)
+![Version](https://img.shields.io/badge/version-0.1.0-9E4AFF?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-9E4AFF?style=flat-square)
+![Category](https://img.shields.io/badge/Category-Bug%20Bounty%20%7C%20Pentesting-111111?style=flat-square)
+![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen?style=flat-square)
 
-En un target grande se acumulan muchos outputs de recon (de tus propias herramientas —
-`pathraider`, `webxray`, `findings-hub`, `takeovflow` — más lo que genera tu pipeline
-determinista) y es fácil perder de vista qué endpoint/parámetro ya se probó para qué clase
-de vulnerabilidad. No existe un "code coverage" equivalente para bug bounty. `reconmind`
-lee el JSON que esas herramientas ya generan con `--json-output` y escribe una matriz
-Markdown, `notes/coverage.md`, dentro de la propia carpeta del target.
+*by [theoffsecgirl](https://github.com/theoffsecgirl)*
 
-`reconmind` **no escanea nada, no hace peticiones, no decide nada por ti**. Solo lee JSON
-que ya existe en disco y lo resume. Es una vista, no una herramienta.
+> 🇪🇸 [Versión en español](README.es.md)
 
-## Cero fricción: no es un comando que tengas que recordar
+</div>
 
-`reconmind` no se usa a mano. Se engancha al final de tu función `hunt-start` existente
-y corre en silencio cada vez que arrancas una sesión — igual que ya haces con
-`program-init` o `scope-program`. Nunca bloquea la sesión: si algo falla, avisa por stderr
-y sigue.
+---
 
-### Instalación
-
-```bash
-chmod +x ~/tools/reconmind/reconmind.py
-ln -s ~/tools/reconmind/reconmind.py ~/.local/bin/reconmind
+```text
+┌──────────────────────────────────────────────────┐
+│  reconmind — coverage index for bug bounty        │
+│  passive · zero-command · by theoffsecgirl        │
+└──────────────────────────────────────────────────┘
 ```
 
-### Enganche en `hunt-start`
+---
 
-En `~/.dotfiles/zsh/.config/zsh/bug-bounty.zsh`, dentro de la función `hunt-start`, entre
-el paso que carga las credenciales de test al entorno y el paso que abre Claude Code
-(el `cd "$tdir"` final), añade:
+## What does it do?
+
+On a large target you end up with a pile of recon output from your own tools —
+[pathraider](https://github.com/theoffsecgirl/pathraider) *(now folded into this repo, see
+below)*, [webxray](https://github.com/theoffsecgirl/webxray),
+[takeovflow](https://github.com/theoffsecgirl/takeovflow),
+[findings-hub](https://github.com/theoffsecgirl/findings-hub) — plus whatever a
+deterministic recon pipeline produced, and it's easy to lose track of which endpoint or
+parameter was already tested for which vulnerability class. There's no equivalent of
+"code coverage" for bug bounty. `reconmind` reads the JSON those tools already emit with
+`--json-output` and writes a Markdown matrix, `notes/coverage.md`, straight into the
+target's own folder.
+
+`reconmind` **does not scan, does not send a single request, does not decide anything for
+you.** It only reads JSON that already exists on disk and summarizes it. It's a view, not
+a tool you run.
+
+> Note: `notes/coverage.md` itself is generated in Spanish — it's a personal tool wired
+> into a Spanish-language hunting workflow. The code, this README and the tests are in
+> English/bilingual, but the output matches the rest of the notes it lives next to.
+
+---
+
+## Zero friction: not a command you have to remember
+
+`reconmind` is not used by hand. It hooks into the end of an existing `hunt-start`
+shell function and runs silently every time a session starts — the same way
+`program-init` or `scope-program` already do. It never blocks the session: if anything
+fails, it warns on stderr and moves on.
+
+### Installation
+
+**From source**
+```bash
+git clone https://github.com/theoffsecgirl/reconmind.git
+cd reconmind
+chmod +x reconmind.py
+ln -s "$(pwd)/reconmind.py" ~/.local/bin/reconmind
+```
+
+**Requirements**
+- Python 3.12+
+- No runtime dependencies (standard library only)
+
+### Hooking into `hunt-start`
+
+Inside your `hunt-start` function, between the step that loads test-account credentials
+into the environment and the step that opens your editor/agent (the final `cd "$tdir"`),
+add:
 
 ```zsh
-  # 4.5 reconmind — actualiza notes/coverage.md en silencio, nunca bloquea la sesion
+  # reconmind — silently refreshes notes/coverage.md, never blocks the session
   if command -v reconmind >/dev/null 2>&1; then
-    reconmind "$tdir" || print -u2 "[i] reconmind no pudo actualizar coverage.md (no bloquea la sesion)"
+    reconmind "$tdir" || print -u2 "[i] reconmind could not update coverage.md (non-blocking)"
   fi
 ```
 
-No hace falta tocar nada más. `$tdir` ya existe en `hunt-start` (`$HUNTING_HOME/targets/$prog`).
+Nothing else to wire up — `$tdir` already exists as the target's directory in a typical
+`hunt-start`.
 
-## Formato de salida: `notes/coverage.md`
+---
 
-Se abre como cualquier otro fichero de notas, en Neovim o donde sea — no se "ejecuta".
-Solo lista endpoints que ya tienen alguna señal de herramienta (con miles de URLs por
-target, una tabla con una fila por endpoint sin tocar sería ilegible); el resto se resume
-en una línea, como un reporte de code coverage real.
+## Output format: `notes/coverage.md`
 
-Ejemplo (con dominios ficticios, `example.com`):
+Open it like any other notes file — it's not something you "run". It only lists
+endpoints that already have a signal from some tool (with thousands of URLs per target, a
+table with a row for every untouched endpoint would be unreadable); everything else is
+summarized in one line, the way a real code-coverage report doesn't print every untested
+line either.
+
+Example (synthetic domains):
 
 ```markdown
 # Coverage — testtarget
@@ -74,66 +119,85 @@ Leyenda: ⬜ no probado · 🟢 probado-limpio · 🟡 probado-sospechoso · �
 - 🟡 sospechoso: 3 · 🟢 limpio: 1 · 🔴 confirmado: 0
 ```
 
-Las columnas son tus 8 categorías priorizadas (Auth, Access Control, IDOR, API Security,
-Business Logic, Client-Side/XSS, Misconfig, SSRF) más una novena, "Otro", para lo que las
-herramientas sí prueban pero no encaja ahí (p. ej. SQLi, LFI/path traversal — que tu
-CLAUDE.md deprioriza explícitamente frente a las 8 anteriores).
+Columns are your 8 priority vulnerability classes (Auth, Access Control, IDOR, API
+Security, Business Logic, Client-Side/XSS, Misconfig, SSRF) plus a ninth, "Otro"
+("Other"), for things the tools do test but that don't belong in those 8 (e.g. SQLi,
+LFI/path traversal).
 
-### Por qué no hay auto-confirmado
+### Why there's no auto-confirmed state
 
-`reconmind` nunca escribe 🔴 **confirmado** por su cuenta. Ninguna de estas herramientas
-valida impacto — son heurísticas (`webxray`: payload reflejado, no verificado;
-`pathraider`: patrón de traversal candidato; `takeovflow`: literalmente lo llama
-`potential_takeovers`). Marcarlo confirmado automáticamente rompería tu propia regla de
-"no llames vulnerabilidad a algo sin impacto validado". El estado queda reservado en la
-leyenda para una fase futura que correlacione con lo que confirmes a mano en
-`PROGRESS.md` — no está implementado en este MVP.
+`reconmind` never writes a 🔴 confirmed cell on its own. None of these tools validate
+impact — they're heuristics (`webxray`: reflected payload, unverified; `pathraider`:
+candidate traversal pattern; `takeovflow`: it literally calls its own finding
+`potential_takeovers`). Auto-marking something confirmed would break the basic bug-bounty
+discipline of never calling something a vulnerability without validated impact. The state
+stays reserved in the legend for a future phase that correlates with what you confirm by
+hand in your target notes — not implemented in this MVP.
 
-### Privacidad
+### Privacy
 
-`reconmind` nunca recorre `loot/`, `.creds/`, `.git/`, `.venv`/`venv/`, `node_modules/` ni
-`.claude/` dentro de la carpeta del target, aunque contengan `.json`. Solo mira el resto.
+`reconmind` never walks into `loot/`, `.creds/`, `.git/`, `.venv`/`venv/`,
+`node_modules/` or `.claude/` inside a target folder, even if they contain `.json`. It
+only looks at the rest.
 
-## Qué JSON sabe leer
+---
 
-`reconmind` no confía en el nombre del fichero — identifica la herramienta por la forma
-del JSON (busca las claves que cada una ya emite con `--json-output`), así que puedes
-guardar los ficheros donde quieras dentro de la carpeta del target (p. ej. `notes/` o
-`meta/`).
+## What JSON it can read
 
-| Herramienta | Cómo se invoca para generar el JSON | Forma que reconoce | Qué aporta |
+`reconmind` doesn't trust filenames — it identifies the tool by the *shape* of the JSON
+(the keys each one already emits with `--json-output`), so you can save those files
+wherever you like inside the target folder (e.g. `notes/` or `meta/`).
+
+| Tool | How to produce the JSON | Shape it recognizes | What it contributes |
 |---|---|---|---|
-| `pathraider` | `pathraider ... --json-output notes/pathraider.json` | `{"tool": "pathraider", "targets": {url: [hallazgos]}}` | Columna "Otro" — 🟢 si la lista de hallazgos de esa URL está vacía, 🟡 si no |
-| `webxray` | `webxray ... --json-output notes/webxray.json` | lista plana de dicts con `type` + `url` | XSS → Client-Side/XSS · SQLi → Otro · cabecera ausente → Misconfig. **Nunca produce 🟢**: su JSON solo registra hallazgos, no "escaneado sin nada que reportar" |
-| `takeovflow` | `takeovflow ... --json-output notes/takeovflow.json` | `{"tool": "takeovflow", "domains": {...}}` | Columna Misconfig — 🟡 por cada entrada en `potential_takeovers`, 🟢 para el resto de subdominios resueltos |
-| `findings-hub` | `findings-hub analyze ... --json > notes/findings-hub.json` (ojo: **no** escribe fichero por su cuenta, hay que redirigir tú el stdout) | `{"modo": "analyze", "hallazgos": [...]}` | Columna inferida de `tags`/`description` de cada hallazgo (o "Otro" si no matchea ninguna); endpoint extraído de la URL dentro de `line` si la hay, si no `source_file (línea N)` |
+| [`pathraider`](https://github.com/theoffsecgirl/pathraider) | `pathraider ... --json-output notes/pathraider.json` | `{"tool": "pathraider", "targets": {url: [findings]}}` | "Otro" column — 🟢 if that URL's findings list is empty, 🟡 otherwise |
+| [`webxray`](https://github.com/theoffsecgirl/webxray) | `webxray ... --json-output notes/webxray.json` | flat list of dicts with `type` + `url` | XSS → Client-Side/XSS · SQLi → Otro · missing header → Misconfig. **Never produces 🟢**: its JSON only records findings, not "scanned, nothing to report" |
+| [`takeovflow`](https://github.com/theoffsecgirl/takeovflow) | `takeovflow ... --json-output notes/takeovflow.json` | `{"tool": "takeovflow", "domains": {...}}` | Misconfig column — 🟡 for each entry in `potential_takeovers`, 🟢 for the rest of the resolved subdomains |
+| [`findings-hub`](https://github.com/theoffsecgirl/findings-hub) | `findings-hub analyze ... --json > notes/findings-hub.json` (note: it does **not** write a file on its own, you need to redirect stdout yourself) | `{"modo": "analyze", "hallazgos": [...]}` | Column inferred from each finding's `tags`/`description` (falls back to "Otro"); endpoint extracted from any URL inside `line`, or `source_file (line N)` otherwise |
 
-Cualquier otro `.json` que haya en la carpeta del target (paquetes npm, configs, exports de
-Caido, etc.) se ignora en silencio — no es un error, solo no matchea ninguna forma
-conocida. Si un `.json` esperado está corrupto o no se puede leer, se avisa por stderr y
-`reconmind` sigue con el resto sin romper `hunt-start`.
+Any other `.json` sitting in the target folder (npm packages, configs, Caido exports...)
+is silently ignored — that's not an error, it just doesn't match a known shape. If an
+expected `.json` is corrupt or unreadable, `reconmind` warns on stderr and keeps going
+without breaking `hunt-start`.
 
-El pipeline determinista (`scope-program`, `webmap-v2`, `paramhunt-v2`) no genera JSON con
-veredicto por endpoint — solo listas de texto plano (`http/live.txt`,
-`http/urls_clean.txt`, `fuzz/params.txt`...). `reconmind` sí las usa para contar la
-superficie conocida total en el resumen (revisa el repo `dotfiles` si esa estructura de
-carpetas cambia — está a nombre de constantes en `SURFACE_FILES` dentro de
-`reconmind.py`), pero no genera filas por sí solas: una fila en la matriz solo aparece
-cuando una herramienta dejó una señal real.
+The deterministic recon pipeline (subdomain/URL/param discovery scripts) doesn't produce
+JSON with a per-endpoint verdict — only plain-text lists (`http/live.txt`,
+`http/urls_clean.txt`, `fuzz/params.txt`...). `reconmind` does use those to count total
+known surface in the summary line (check the `SURFACE_FILES` constant in `reconmind.py`
+if that folder layout changes), but they never generate rows on their own — a row only
+appears once a tool has actually left a signal.
 
-## Qué NO hace (todavía)
+---
 
-Nada de esto está en el MVP — es fase futura, a decidir tras usar esto un tiempo:
+## What it does NOT do (yet)
 
-- Comandos de consulta interactivos.
-- Registro manual de pruebas hechas a mano en Caido/Burp.
-- Lenguaje natural / LLM.
-- Correlación cross-target.
+None of this is in the MVP — future phase, decided after living with this for a while:
+
+- Interactive query commands.
+- Manual logging of tests done by hand in Caido/Burp.
+- Natural language / LLM correlation.
+- Cross-target correlation.
+
+---
 
 ## Tests
 
 ```bash
-cd ~/tools/reconmind
-python3 -m pip install pytest   # o: pip install -e ".[dev]"
+cd reconmind
+python3 -m pip install pytest   # or: pip install -e ".[dev]"
 pytest
 ```
+
+---
+
+## Ethical use
+
+For bug bounty, labs and authorized engagements only. `reconmind` itself never touches
+the network — it only reads local JSON your other tools already produced under
+authorization.
+
+---
+
+## License
+
+MIT · [theoffsecgirl](https://github.com/theoffsecgirl)
